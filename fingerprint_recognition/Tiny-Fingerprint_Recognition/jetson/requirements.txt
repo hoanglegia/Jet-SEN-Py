@@ -1,0 +1,15 @@
+# Requirements cho Jetson Nano B01
+# Cài đặt trên Jetson Nano (JetPack 4.6.x / Ubuntu 18.04)
+#
+# TFLite Runtime: cài theo hướng dẫn trong README.md
+# numpy & opencv thường đã có sẵn trong JetPack
+
+numpy>=1.19.0
+opencv-python>=4.5.0
+pyserial>=3.5
+tflite-runtime>=2.5.0
+
+# CHỈ cần khi chạy finetune_sensor.py (có thể skip nếu chỉ inference):
+# tensorflow>=2.5.0
+# imgaug>=0.4.0
+# scikit-learn>=0.24.0

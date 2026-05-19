@@ -1,0 +1,64 @@
+@startuml Dataflow_Fingerprint
+title Fingerprint Recognition Pipeline Diagram (Siamese Network)
+skinparam monochrome false
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam roundcorner 15
+skinparam ArrowThickness 1.5
+left to right direction
+
+package "Data Preparation (loader.py)" #LightBlue {
+    [Raw SOCOFing Data \n(BMP Images: Real & Altered)] --> [Label Extraction]
+    [Label Extraction] --> [Data Partitioning]
+    note bottom: Extract Subject ID, Gender, \nLR, Finger from Filename
+}
+
+package "Preprocessing & Augmentation (engineer.py)" #AliceBlue {
+        [Data Partitioning] --> [Image Resizing]
+        [Image Resizing] --> [Grayscale Normalization]
+        [Grayscale Normalization] --> [Data Augmentation]
+        
+        package "Augmentation Logic" #GhostWhite {
+            [Gaussian Blur (sigma 0-0.5)] 
+            [Affine: Rotate, Scale, Translate]
+        }
+        [Data Augmentation] --> [90x90 Input Tensors]
+    }
+
+package "Feature Learning (classifiers.py)" #LightYellow {
+    [90x90 Input Tensors] --> [Siamese Network]
+    
+    package "Siamese CNN Architecture" #Wheat {
+        [Siamese Network] --> [Twin CNN Branches \n(Shared Weights)]
+        [Twin CNN Branches \n(Shared Weights)] --> [Feature Subtraction]
+        [Feature Subtraction] --> [Fully Connected Layers]
+        [Fully Connected Layers] --> [Sigmoid Similarity Score]
+    }
+
+    [Sigmoid Similarity Score] --> [Model Evaluation]
+    note top: Binary Crossentropy Loss
+}
+
+package "Model Quantization (compress.py)" #LightPink {
+    [Model Evaluation] --> [Compute Scale Factor]
+    [Compute Scale Factor] --> [Float32 to INT8 Mapping]
+    [Float32 to INT8 Mapping] --> [Quantized Weights]
+}
+
+package "Export & Deployment" #LightGray {
+    [Quantized Weights] --> export_point
+    
+    package "Model Export (export.py)" #GhostWhite {
+        file "TFLite Model (.tflite)" as tflite
+        file "C-Array" as c_array
+    }
+
+    package "MCU Deployment (c_export.py)" #GhostWhite {
+        file "C Header (.h file)" as c_header
+    }
+
+    export_point ..> tflite : Keras to TFLite
+    export_point ..> c_array : Direct C-Array Export
+    tflite --> c_header : TFLite to C-Array
+}
+@enduml

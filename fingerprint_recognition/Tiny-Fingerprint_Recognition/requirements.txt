@@ -1,0 +1,6 @@
+numpy==1.24.3
+opencv-python
+tensorflow==2.15.0
+imgaug
+scikit-learn
+matplotlib
