@@ -123,17 +123,22 @@ class FingerprintGenerator(keras.utils.Sequence):
 class SensorPairGenerator(keras.utils.Sequence):
     """
     Generator tạo pair (positive/negative) từ ảnh SEN0348 cho fine-tuning.
+
+    Pairs được tạo NGẪU NHIÊN mỗi lần → steps_per_epoch không phụ thuộc
+    vào số lượng ảnh. Mặc định 200 steps/epoch = 200×batch_size pairs/epoch.
     """
-    def __init__(self, images, labels, batch_size=16, augmentor=None):
+    def __init__(self, images, labels, batch_size=16, augmentor=None,
+                 steps_per_epoch=200):
         self.images = images
         self.labels = labels
         self.batch_size = batch_size
         self.augmentor = augmentor
+        self.steps_per_epoch = steps_per_epoch
         self.unique_labels = np.unique(labels)
         self.label_to_indices = {l: np.where(labels == l)[0] for l in self.unique_labels}
 
     def __len__(self):
-        return max(1, len(self.images) // self.batch_size)
+        return self.steps_per_epoch
 
     def __getitem__(self, index):
         h, w = self.images.shape[1], self.images.shape[2]
