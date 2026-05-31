@@ -156,9 +156,9 @@ def build_sensor_model(input_shape=(90, 90, 1)):
     x = layers.BatchNormalization()(x)
     x = layers.MaxPooling2D(2)(x)
 
-    x = layers.GlobalAveragePooling2D()(x)  # Output: (128,) vector
-    x = layers.Dense(64, activation='relu')(x)
-    x = layers.Dropout(0.3)(x)
+    x = layers.Flatten()(x)  # Output: vector thay vi GAP de giu lai spatial structure
+    x = layers.Dense(128, activation='relu')(x)
+    x = layers.Dropout(0.5)(x)
 
     feature_model = Model(inputs, x, name="FeatureExtractor")
 
