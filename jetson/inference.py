@@ -16,7 +16,8 @@ try:
     from tflite_runtime.interpreter import Interpreter as tflite_Interpreter
     print("[Engine] Sử dụng tflite_runtime")
 except ImportError:
-    from tensorflow.lite import Interpreter as tflite_Interpreter
+    import tensorflow as tf
+    tflite_Interpreter = tf.lite.Interpreter
     print("[Engine] Sử dụng tensorflow.lite")
 
 from config import (
@@ -77,12 +78,55 @@ class FingerprintEngine:
         self.input_details = self.interpreter.get_input_details()
         self.output_details = self.interpreter.get_output_details()
 
+        # Map input tensors theo TÊN thay vì thứ tự index.
+        # TFLite converter có thể đảo thứ tự input → gây nhầm lẫn nếu
+        # chỉ dùng index [0], [1]. Đây là nguyên nhân phổ biến khiến
+        # model cho kết quả sai khi deploy.
+        self._input_a_detail = None  # input cho img_a (ảnh query)
+        self._input_b_detail = None  # input cho img_b (ảnh reference)
+        self._map_inputs_by_name()
+
         self._clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP, tileGridSize=CLAHE_GRID)
 
         print(f"[Engine] Model loaded: {model_path}")
         print(f"[Engine] Threshold={self.threshold} | CLAHE={self.use_clahe} | GridDenoise={self.use_grid_denoise}")
         for i, inp in enumerate(self.input_details):
             print(f"  Input[{i}]: name={inp['name']}, shape={inp['shape']}, dtype={inp['dtype']}")
+
+    def _map_inputs_by_name(self):
+        """
+        Map input tensors theo tên để đảm bảo img_a, img_b đúng vị trí
+        bất kể TFLite converter sắp xếp thứ tự thế nào.
+
+        Tên phổ biến khi export từ Keras:
+          - 'serving_default_input_1:0' hoặc chứa 'input_1' → img_a
+          - 'serving_default_input_2:0' hoặc chứa 'input_2' → img_b
+        """
+        details = self.input_details
+        if len(details) != 2:
+            print(f"[Engine] WARNING: Expected 2 inputs, got {len(details)}")
+            self._input_a_detail = details[0]
+            self._input_b_detail = details[1] if len(details) > 1 else details[0]
+            return
+
+        # Thử match theo tên
+        name0 = details[0]['name'].lower()
+        name1 = details[1]['name'].lower()
+
+        # Keras Siamese thường tạo tên: input_1, input_2
+        if 'input_1' in name0 or ('input_2' not in name0 and 'input_1' not in name1):
+            self._input_a_detail = details[0]
+            self._input_b_detail = details[1]
+        elif 'input_1' in name1:
+            self._input_a_detail = details[1]
+            self._input_b_detail = details[0]
+        else:
+            # Fallback: giữ thứ tự gốc
+            self._input_a_detail = details[0]
+            self._input_b_detail = details[1]
+
+        print(f"[Engine] Input mapping: img_a → '{self._input_a_detail['name']}', "
+              f"img_b → '{self._input_b_detail['name']}'")
 
     # -------------------- Preprocess --------------------
     def preprocess(self, img):
@@ -113,9 +157,11 @@ class FingerprintEngine:
 
     # -------------------- Inference --------------------
     def _set_inputs(self, t1, t2):
-        d0, d1 = self.input_details[0], self.input_details[1]
-        self.interpreter.set_tensor(d0['index'], t1.astype(d0['dtype']))
-        self.interpreter.set_tensor(d1['index'], t2.astype(d1['dtype']))
+        """Gán input theo tên tensor (an toàn khi TFLite đảo thứ tự)."""
+        da = self._input_a_detail
+        db = self._input_b_detail
+        self.interpreter.set_tensor(da['index'], t1.astype(da['dtype']))
+        self.interpreter.set_tensor(db['index'], t2.astype(db['dtype']))
 
     def compare(self, img1, img2):
         """So sánh 2 ảnh vân tay (uint8 grayscale). Returns (score, is_match, ms)."""
@@ -134,25 +180,38 @@ class FingerprintEngine:
         score = float(self.interpreter.get_tensor(self.output_details[0]['index'])[0][0])
         return score, score > self.threshold, ms
 
+    def preprocess_for_cache(self, img):
+        """
+        Preprocess ảnh 1 lần để cache (dùng cho enrolled images).
+        Trả về tensor float32 shape (1,90,90,1) — sẵn sàng dùng trực tiếp.
+        """
+        return self.preprocess(img)
+
     def compare_from_files(self, path1, path2):
         img1 = cv2.imread(path1, cv2.IMREAD_GRAYSCALE)
         img2 = cv2.imread(path2, cv2.IMREAD_GRAYSCALE)
         return self.compare(img1, img2)
 
     def find_best_match(self, query_img, enrolled_db, threshold=None):
-        """
-        Tìm vân tay khớp nhất trong database. enrolled_db có thể chứa:
-          - ảnh raw uint8 (sẽ tự preprocess)
-          - tensor float32 shape (1,90,90,1) — đã preprocess sẵn (nhanh hơn)
-        Returns: (best_user_id or None, best_score, total_ms)
-        """
+        \"\"\"
+        Tìm vân tay khớp nhất trong database.
+        Sử dụng AVERAGE SCORE (điểm trung bình) trên tất cả các mẫu của một người
+        để giảm triệt để hiện tượng nhận diện nhầm (False Accept Rate).
+        \"\"\"
         thr = self.threshold if threshold is None else threshold
         q = self.preprocess(query_img)
         if q is None:
             return None, 0.0, 0.0
 
-        best_user, best_score, total_ms = None, 0.0, 0.0
+        best_user = None
+        best_avg_score = 0.0
+        total_ms = 0.0
+
         for user_id, samples in enrolled_db.items():
+            if not samples:
+                continue
+                
+            user_scores = []
             for ref in samples:
                 if isinstance(ref, np.ndarray) and ref.ndim == 4 and ref.dtype == np.float32:
                     ref_t = ref
@@ -160,11 +219,18 @@ class FingerprintEngine:
                     ref_t = self.preprocess(ref)
                     if ref_t is None:
                         continue
+                        
                 score, _, ms = self.compare_preprocessed(q, ref_t)
                 total_ms += ms
-                if score > best_score:
-                    best_score, best_user = score, user_id
+                user_scores.append(score)
+                
+            if user_scores:
+                avg_score = sum(user_scores) / len(user_scores)
+                if avg_score > best_avg_score:
+                    best_avg_score = avg_score
+                    best_user = user_id
 
-        if best_score < thr:
+        if best_avg_score < thr:
             best_user = None
-        return best_user, best_score, total_ms
+            
+        return best_user, best_avg_score, total_ms

@@ -21,7 +21,8 @@ import numpy as np
 
 from config import (
     MATCH_THRESHOLD, ENROLL_SAMPLES,
-    SENSOR_UART_PORT, SENSOR_BAUD_RATE, SENSOR_IMG_SIZE
+    SENSOR_UART_PORT, SENSOR_BAUD_RATE, SENSOR_IMG_SIZE,
+    PREPROCESS_ENROLLED,
 )
 from inference import FingerprintEngine
 from fingerprint_db import FingerprintDB
@@ -57,10 +58,27 @@ class FingerprintApp:
         self.enrolled_cache = {}     # Cache ảnh đã đăng ký trong RAM
 
     def reload_cache(self):
-        """Tải lại tất cả ảnh đã đăng ký vào RAM."""
-        self.enrolled_cache = self.db.load_all_enrolled()
-        total = sum(len(v) for v in self.enrolled_cache.values())
-        print(f"[App] Cache: {len(self.enrolled_cache)} người dùng, {total} mẫu.")
+        """
+        Tải lại tất cả ảnh đã đăng ký vào RAM.
+        Nếu PREPROCESS_ENROLLED=True, preprocess 1 lần → tăng tốc inference.
+        """
+        raw_cache = self.db.load_all_enrolled()
+        if PREPROCESS_ENROLLED:
+            self.enrolled_cache = {}
+            total_pre = 0
+            for user_id, samples in raw_cache.items():
+                preprocessed = []
+                for s in samples:
+                    t = self.engine.preprocess_for_cache(s)
+                    if t is not None:
+                        preprocessed.append(t)
+                        total_pre += 1
+                self.enrolled_cache[user_id] = preprocessed
+            print(f"[App] Cache: {len(self.enrolled_cache)} người dùng, {total_pre} mẫu (preprocessed).")
+        else:
+            self.enrolled_cache = raw_cache
+            total = sum(len(v) for v in self.enrolled_cache.values())
+            print(f"[App] Cache: {len(self.enrolled_cache)} người dùng, {total} mẫu.")
 
     def _wait_and_capture(self, timeout_s=10):
         """Chờ ngón tay + chụp ảnh. Trả về numpy array hoặc None."""
